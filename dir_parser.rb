@@ -45,7 +45,7 @@ class Student
     "#{@first_name} (#{Student.grade_to_s(@grade_level + incr)})\n"
   end
 
-  def print_mail_merge(slots, high_count, incr = 0)
+  def fill_slots(slots, high_count, incr = 0)
     slots[high_count][0] = "#{@first_name} (#{Student.grade_to_s(@grade_level + incr)})"
     high_count + 3
   end
@@ -81,7 +81,7 @@ class Family
     str
   end
   
-  def print_mail_merge(slots, high_count)
+  def fill_slots(slots, high_count)
     slots[high_count+1][0] = @parents
     next_high = high_count+3
     unless @postal.empty?
@@ -121,12 +121,13 @@ class DirectoryEntry
   include Comparable
   attr_accessor :lines, :last_name, :families, :students, :lno
   
-  def initialize(ls, line_no)
+  def initialize(ls, line_no, b=true)
     @last_name = ls
     @lines = [ ls ]
     @families = []
     @students = []
     @lno = line_no
+    @bump = b
   end
   
   def postal
@@ -157,10 +158,10 @@ class DirectoryEntry
     @students.any? { |s| s.returning? }
   end
   
-  def to_s(next_year = true)
+  def to_s
     str = "LAST_NAME: #{last_name}\n"
     @students.each_with_index do |s, i|
-      str << "STUDENT [#{i}]: #{s.to_s(next_year ? 1 : 0)}" unless next_year && !s.returning?
+      str << "STUDENT [#{i}]: #{s.to_s(@bump ? 1 : 0)}" unless @bump && !s.returning?
     end
     @families.each_with_index do |f, i|
       str << "FAMILY [#{i}]:\n#{f}"
@@ -168,16 +169,16 @@ class DirectoryEntry
     str
   end
 
-  def print_mail_merge(next_year = true)
+  def print_mail_merge
     student_high = 0
     slots = Array.new(48) { |i| ['', i] }
     @students.each_with_index do |s, i|
-      student_high = s.print_mail_merge(slots, student_high, next_year ? 1 : 0) unless next_year && !s.returning?
+      student_high = s.fill_slots(slots, student_high, @bump ? 1 : 0) unless @bump && !s.returning?
     end
     
     family_high = 0
     @families.each_with_index do |f, i|
-      family_high = f.print_mail_merge(slots, family_high)
+      family_high = f.fill_slots(slots, family_high)
     end
     family_high = student_high if student_high > family_high
     
@@ -211,9 +212,10 @@ class SeeAlso
 end
 
 class DirectoryParser
-  def initialize(io, d=false)
-    @debug = d
+  def initialize(io, v=false, b=true)
     @io = io
+    @verbose = v
+    @bump = b
     @lno = 0
     @xrefs = { }
     @entries = [ ]
@@ -222,7 +224,7 @@ class DirectoryParser
   end
   
   
-  def dump(next_year = true)
+  def dump
     STDERR.puts "XREFS"
     @xrefs.keys.sort.each do |ref|
       STDERR.puts @xrefs[ref].to_s
@@ -230,15 +232,15 @@ class DirectoryParser
     
     STDERR.puts "ENTRIES"
     @entries.sort.each do |ent|
-      next if next_year && !ent.any_returning_students?
+      next if @bump && !ent.any_returning_students?
       STDERR.puts ent.to_s
       STDERR.puts
     end
   end
   
-  def print_mail_merge(f, next_year = true)
+  def print_mail_merge(f)
     @entries.sort.each do |ent|
-      next if next_year && !ent.any_returning_students?
+      next if @bump && !ent.any_returning_students?
       f.write(ent.print_mail_merge)
       f.write("\n")
     end
@@ -270,8 +272,8 @@ class TabbedTextParser < DirectoryParser
             col = 0
             (@xrefs[sa.see_also] ||= [ ]).push(sa)
           else
-            STDERR.puts "new entry for #{line}" if @debug
-            @cur_entry = DirectoryEntry.new(line, @lno)
+            STDERR.puts "new entry for #{line}" if @verbose
+            @cur_entry = DirectoryEntry.new(line, @lno, @bump)
             row = 0
             col = 0
             @entries.push(@cur_entry)
@@ -285,24 +287,24 @@ class TabbedTextParser < DirectoryParser
             end
             col = 1
           when 1
-            STDERR.puts "col #{col}, #{row}: '#{line}'" if @debug
+            STDERR.puts "col #{col}, #{row}: '#{line}'" if @verbose
             if line.match(/@/)
-              STDERR.puts "new email" if @debug
+              STDERR.puts "new email" if @verbose
               @cur_entry.add_email(line)
             elsif !line.empty?
               if @cur_entry.families.size == 0 || !@cur_entry.postal.empty?
-                STDERR.puts "new family" if @debug
+                STDERR.puts "new family" if @verbose
                 @cur_entry.add_family(line)
               else
-                STDERR.puts "new postal" if @debug
+                STDERR.puts "new postal" if @verbose
                 @cur_entry.postal = line
               end
             end
             col = 2
           when 2
-            STDERR.puts "col #{col}, #{row}: '#{line}'" if @debug
+            STDERR.puts "col #{col}, #{row}: '#{line}'" if @verbose
             if !line.empty?
-              STDERR.puts "new phone" if @debug
+              STDERR.puts "new phone" if @verbose
               @cur_entry.add_phone(line)
             end
             col = 0
@@ -313,10 +315,10 @@ class TabbedTextParser < DirectoryParser
             col = 0
             row += 1
           end
-          STDERR.puts "NL col #{col}, #{row}: '#{line}'" if @debug
+          STDERR.puts "NL col #{col}, #{row}: '#{line}'" if @verbose
           stu = line.match(/^(.+)\s*\(([K1-8])\)\s*$/)
           if stu
-            STDERR.puts "new student" if @debug
+            STDERR.puts "new student" if @verbose
             grade_level = Student.parse_grade_level(stu[2])
             @cur_entry.students.push(Student.new(stu[1], grade_level))
           elsif !line.empty?
@@ -336,13 +338,13 @@ class WordXmlParser < DirectoryParser
   NSHASH = {'w' => "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
   
   def do_line(first)
-    # STDERR.puts "line parts: #{@parts.join('\n')}" if @debug && @lno > 0
+    # STDERR.puts "line parts: #{@parts.join('\n')}" if @verbose && @lno > 0
     @parts = @parts.map { |p| p.strip }
     line_parsed = false
     if !@parts[0].empty?
       see = @parts[0].match(/^(.+) - See (.+)$/)
       if see
-        STDERR.puts "\nnew SA: #{@parts[0]}" if @debug
+        STDERR.puts "\nnew SA: #{@parts[0]}" if @verbose
         sa = SeeAlso.new(see[1], see[2])
         @cur_entry = nil
         (@xrefs[sa.see_also] ||= [ ]).push(sa)
@@ -350,33 +352,33 @@ class WordXmlParser < DirectoryParser
       else
         stu = @parts[0].match(/^(.+)\s*\(([K1-8])\)\s*$/)
         if stu
-          STDERR.puts "new student: #{@parts[0]}" if @debug
+          STDERR.puts "new student: #{@parts[0]}" if @verbose
           grade_level = Student.parse_grade_level(stu[2])
           @cur_entry.students.push(Student.new(stu[1], grade_level))
         elsif !@parts[1].empty?
-          STDERR.puts "\nnew entry: #{@parts[0]}" if @debug
-          @cur_entry = DirectoryEntry.new(@parts[0], @lno)
+          STDERR.puts "\nnew entry: #{@parts[0]}" if @verbose
+          @cur_entry = DirectoryEntry.new(@parts[0], @lno, @bump)
           @entries.push(@cur_entry)
         else
-          STDERR.puts "discarding (first): #{@parts[0]}" if @debug
+          STDERR.puts "discarding (first): #{@parts[0]}" if @verbose
         end
       end
     end
     if !line_parsed
       if @parts[1].match(/@/)
-        STDERR.puts "new email: #{@parts[1]}" if @debug
+        STDERR.puts "new email: #{@parts[1]}" if @verbose
         @cur_entry.add_email(@parts[1])
       elsif !@parts[1].empty?
         if @cur_entry.families.size == 0 || !@cur_entry.postal.empty?
-          STDERR.puts "new family: #{@parts[1]}" if @debug
+          STDERR.puts "new family: #{@parts[1]}" if @verbose
           @cur_entry.add_family(@parts[1])
         else
-          STDERR.puts "new postal: #{@parts[1]}" if @debug
+          STDERR.puts "new postal: #{@parts[1]}" if @verbose
           @cur_entry.postal = @parts[1]
         end
       end
       if !@parts[2].empty?
-        STDERR.puts "new phone: #{@parts[2]}" if @debug
+        STDERR.puts "new phone: #{@parts[2]}" if @verbose
         @cur_entry.add_phone(@parts[2])
       end
     end
@@ -417,7 +419,7 @@ class WordXmlParser < DirectoryParser
             t = t.upcase
           end
           @parts[col] << t
-          # done = true if @debug && @entries.size == 20
+          # done = true if @verbose && @entries.size == 20
         end
       end
     rescue
@@ -429,12 +431,20 @@ end
 
 # Main script
 
+bump = false
 format = 'xml'
+verb = false
 opts = OptionParser.new do |opts|
   opts.banner = "Usage: #{$0} [options] <input> <output.txt>"
 
-  opts.on("-f", "--format", "Format of input file (xml or txt)") do |f|
+  opts.on("-b", "--bump", "Bump students up one year") do
+    bump = true
+  end
+  opts.on("-f", "--format FMT", "Format of input file (xml or txt)") do |f|
     format = f
+  end
+  opts.on("-v", "--verbose", "Debugging on STDERR") do
+    verb = true
   end
   opts.on_tail("-h", "--help", "Show this help message") do 
     puts opts
@@ -449,12 +459,15 @@ if ARGV.size < 2
 end
 
 File.open(ARGV[0], "r") do |f_in|
+  if verb
+    STDERR.puts(bump ? "printing with students bumped up one year" : "printing without bump")
+  end
   parser = nil
   case format
   when /txt/
-    parser = TabbedTextParser.new(f_in)
+    parser = TabbedTextParser.new(f_in, verb, bump)
   else
-    parser = WordXmlParser.new(f_in, true)
+    parser = WordXmlParser.new(f_in, verb, bump)
   end
   parser.parse
   File.open(ARGV[1], "w") do |f_out|
