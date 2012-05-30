@@ -194,6 +194,7 @@ class DirectoryEntry
       HIGH_FAM[0] = self
       HIGH_FAM[1] = family_high
     end
+    str << ">\n"
     str
   end
 end
