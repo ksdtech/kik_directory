@@ -1,3 +1,4 @@
+#!/usr/bin/env ruby
 require 'nokogiri'
 require 'optparse'
 
@@ -26,8 +27,6 @@ ABBRS = {
 'Tib' => 'Tiburon' 
 }
 
-ERRORS = [ ]
-HIGH_FAM = [ nil, 0 ]
 
 class Student
   attr_accessor :first_name, :grade_level
@@ -41,12 +40,16 @@ class Student
     @grade_level < 8
   end
   
+  def grade_to_s(incr = 0)
+    Student.grade_to_s(@grade_level + incr)
+  end
+  
   def to_s(incr = 0)
-    "#{@first_name} (#{Student.grade_to_s(@grade_level + incr)})\n"
+    "#{@first_name} (#{grade_to_s(incr)})\n"
   end
 
   def fill_slots(slots, high_count, incr = 0)
-    slots[high_count][0] = "#{@first_name} (#{Student.grade_to_s(@grade_level + incr)})"
+    slots[high_count][0] = "#{@first_name} (#{grade_to_s(incr)})"
     high_count + 3
   end
 
@@ -62,12 +65,13 @@ end
 class Family
   attr_accessor :parents, :postal, :emails, :phones, :lno
   
-  def initialize(p, line_no)
+  def initialize(prs, p)
+    @parser = prs
     @parents = p
     @postal = ''
     @emails = []
     @phones = []
-    @lno = line_no
+    @lno = @parser.lno
   end
   
   def to_s
@@ -100,19 +104,70 @@ class Family
     next_high
   end
   
-  def print_address
-    str = @postal
-    unless str.empty?
-      addr = str.match(/^(.+),\s+([A-Z].*)\s+([0-9]+)$/)
+  def address_to_h
+    h = { }
+    unless @postal.empty?
+      addr = @postal.match(/^(.+),\s+([A-Z].*)\s+([0-9]+)$/)
       if addr
         abbr = addr[2].gsub(/,$/, '').gsub(/\./, '').gsub(/\s+$/, '')
-        city = ABBRS.fetch(abbr, abbr)
-        str = "#{addr[1]}\n#{city}, CA #{addr[3]}"
+        h["street"] = addr[1]
+        h["city"] = ABBRS.fetch(abbr, abbr)
+        h["zip"] = addr[3]
       else
-        ERRORS.push([str, @lno])
+        h["street"] = @postal
+        @parser.log_error([@postal, @lno])
       end
     end
-    str
+    h
+  end
+  
+  def emails_to_h
+    h = { }
+    ems = @emails.map { |n| n.gsub(/\s*\(.+$/, '').strip }
+    if ems.size > 0
+      h["email1"] = ems[0]
+    end
+    if ems.size > 1
+      h["email2"] = ems[1]
+    end
+    h
+  end
+  
+  def phones_to_h
+    h = { }
+    @phones.each_with_index do |p, i|
+      ptype = 'home'
+      numbers = [ ]
+      case p
+      when /^\(C\).+/
+        ptype = 'cell'
+        numbers = p.gsub(/^\(C\)\s*/, '').split('/')
+      when /^\(W\).+/
+        ptype = 'work'
+        numbers = p.gsub(/^\(W\)\s*/, '').split('/')
+      else
+        ptype = 'home'
+        numbers[0] = p.strip
+      end
+      numbers = numbers.map { |n| n.gsub(/\s*\(.+$/, '').strip }
+      if ptype == 'home'
+        h['home'] = numbers[0]
+      else
+        if numbers.size > 0
+          h["#{ptype}1"] = numbers[0]
+        end
+        if numbers.size > 1
+          h["#{ptype}2"] = numbers[1]
+        end
+      end
+    end
+    h
+  end
+  
+  def print_address
+    h = address_to_h
+    h.key?('street') && h.key?('city') && h.key?('zip') ?
+      "#{h['street']}\n#{h['city']}, CA #{h['zip']}" : @postal
   end
 end
 
@@ -121,13 +176,14 @@ class DirectoryEntry
   include Comparable
   attr_accessor :lines, :last_name, :families, :students, :lno
   
-  def initialize(ls, line_no, b=true)
+  def initialize(p, ls)
+    @parser = p
     @last_name = ls
     @lines = [ ls ]
     @families = []
     @students = []
-    @lno = line_no
-    @bump = b
+    @lno = @parser.lno
+    @bump = @parser.bump
   end
   
   def postal
@@ -139,7 +195,7 @@ class DirectoryEntry
   end
   
   def add_family(p)
-    @families.push(Family.new(p.strip, @lno))
+    @families.push(Family.new(@parser, p.strip))
   end
   
   def add_email(e)
@@ -159,6 +215,8 @@ class DirectoryEntry
   end
   
   def to_s
+    @parser.update_stats(@students.size, @families.size)
+    
     str = "LAST_NAME: #{last_name}\n"
     @students.each_with_index do |s, i|
       str << "STUDENT [#{i}]: #{s.to_s(@bump ? 1 : 0)}" unless @bump && !s.returning?
@@ -167,6 +225,59 @@ class DirectoryEntry
       str << "FAMILY [#{i}]:\n#{f}"
     end
     str
+  end
+  
+  def to_a
+    ary = [ ]
+    ary.push(['kikdir_last_name', last_name])
+    j = 0
+    @students.each_with_index do |s, i|
+      unless @bump && !s.returning?
+        j += 1
+        ary.push(["kikdir_s#{j}_first_name", s.first_name])
+        ary.push(["kikdir_s#{j}_grade", s.grade_to_s(@bump ? 1 : 0)])
+        break if j == 4
+      end
+    end
+    while j < 4
+      j += 1
+      ary.push(["kikdir_s#{j}_first_name", ''])
+      ary.push(["kikdir_s#{j}_grade", ''])
+    end
+    j = 0
+    @families.each_with_index do |f, i|
+      j += 1
+      h_address = f.address_to_h
+      h_emails = f.emails_to_h
+      h_phones = f.phones_to_h
+      ary.push(["kikdir_f#{j}_parents", f.parents])
+      ary.push(["kikdir_f#{j}_street", h_address.fetch('street', '')])
+      ary.push(["kikdir_f#{j}_city", h_address.fetch('city', '')])
+      ary.push(["kikdir_f#{j}_zip", h_address.fetch('zip', '')])
+      ary.push(["kikdir_f#{j}_email1", h_emails.fetch('email1', '')])
+      ary.push(["kikdir_f#{j}_email2", h_emails.fetch('email2', '')])
+      ary.push(["kikdir_f#{j}_home_phone", h_phones.fetch('home', '')])
+      ary.push(["kikdir_f#{j}_work_phone1", h_phones.fetch('work1', '')])
+      ary.push(["kikdir_f#{j}_work_phone2", h_phones.fetch('work2', '')])
+      ary.push(["kikdir_f#{j}_cell_phone1", h_phones.fetch('cell1', '')])
+      ary.push(["kikdir_f#{j}_cell_phone2", h_phones.fetch('cell2', '')])
+      break if j == 2
+    end
+    while j < 2
+      ary.push(["kikdir_f#{j}_parents", ''])
+      ary.push(["kikdir_f#{j}_street", ''])
+      ary.push(["kikdir_f#{j}_city", ''])
+      ary.push(["kikdir_f#{j}_zip", ''])
+      ary.push(["kikdir_f#{j}_email1", ''])
+      ary.push(["kikdir_f#{j}_email2", ''])
+      ary.push(["kikdir_f#{j}_home_phone", ''])
+      ary.push(["kikdir_f#{j}_work_phone1", ''])
+      ary.push(["kikdir_f#{j}_work_phone2", ''])
+      ary.push(["kikdir_f#{j}_cell_phone1", ''])
+      ary.push(["kikdir_f#{j}_cell_phone2", ''])
+      j += 1
+    end
+    ary
   end
 
   def print_mail_merge
@@ -190,10 +301,12 @@ class DirectoryEntry
       str << "#{slots[i][0]}\t#{slots[i+1][0]}\t#{slots[i+2][0]}\n"
       i += 3
     end
-    if family_high > HIGH_FAM[1]
-      HIGH_FAM[0] = self
-      HIGH_FAM[1] = family_high
+    
+    if family_high > family_stats[1]
+      family_stats[0] = self
+      family_stats[1] = family_high
     end
+    
     str << ">\n"
     str
   end
@@ -208,11 +321,13 @@ class SeeAlso
   end
   
   def to_s
-    "#{@name} - See #{@see_also}\n"
+    "#{@name} - See #{@see_also}"
   end
 end
 
 class DirectoryParser
+  attr_accessor :lno, :bump
+  
   def initialize(io, v=false, b=true)
     @io = io
     @verbose = v
@@ -222,20 +337,66 @@ class DirectoryParser
     @entries = [ ]
     @cur_entry = nil
     @parts = ['', '', '']
+    @errors = [ ]
+    @family_stats = [ nil, 0 ]
+    @high_student_count = 0
+    @high_family_count = 0
+  end
+    
+  def update_stats(student_count, family_count)
+    if student_count > @high_student_count
+      @high_student_count = student_count
+    end
+    if family_count > @high_family_count
+      @high_family_count = family_count
+    end
   end
   
+  def log_error(e)
+    @errors.push(e)
+  end
   
-  def dump
-    STDERR.puts "XREFS"
-    @xrefs.keys.sort.each do |ref|
-      STDERR.puts @xrefs[ref].to_s
+  def print_stats
+    STDERR.puts "Max # of students: #{@high_student_count}"
+    STDERR.puts "Max # of families: #{@high_family_count}"
+    unless @errors.empty?
+      STDERR.puts "errors"
+      @errors.each do |e|
+        STDERR.puts e.inspect
+      end
     end
-    
-    STDERR.puts "ENTRIES"
+  end
+  
+  def tab(f)
+    header = true
     @entries.sort.each do |ent|
       next if @bump && !ent.any_returning_students?
-      STDERR.puts ent.to_s
-      STDERR.puts
+      ary = ent.to_a
+      if header
+        f.write(ary.map { |kv| kv[0]}.join("\t"))
+        f.write("\n")
+        header = false
+      end
+      f.write(ary.map { |kv| kv[1]}.join("\t"))
+      f.write("\n")
+     end
+  end
+  
+  def dump(f)
+    f.write("XREFS\n")
+    @xrefs.keys.sort.each do |ref|
+      ary = @xrefs[ref]
+      ary.each do |sa|
+        f.write(sa.to_s)
+        f.write("\n")
+      end
+    end
+    
+    f.write("ENTRIES\n")
+    @entries.sort.each do |ent|
+      next if @bump && !ent.any_returning_students?
+      f.write(ent.to_s)
+      f.write("\n")
     end
   end
   
@@ -245,6 +406,8 @@ class DirectoryParser
       f.write(ent.print_mail_merge)
       f.write("\n")
     end
+    
+    STDERR.puts "#{@family_stats[1]}: #{@family_stats[0].last_name}"
   end
 end
 
@@ -274,7 +437,7 @@ class TabbedTextParser < DirectoryParser
             (@xrefs[sa.see_also] ||= [ ]).push(sa)
           else
             STDERR.puts "new entry for #{line}" if @verbose
-            @cur_entry = DirectoryEntry.new(line, @lno, @bump)
+            @cur_entry = DirectoryEntry.new(self, line)
             row = 0
             col = 0
             @entries.push(@cur_entry)
@@ -358,7 +521,7 @@ class WordXmlParser < DirectoryParser
           @cur_entry.students.push(Student.new(stu[1], grade_level))
         elsif !@parts[1].empty?
           STDERR.puts "\nnew entry: #{@parts[0]}" if @verbose
-          @cur_entry = DirectoryEntry.new(@parts[0], @lno, @bump)
+          @cur_entry = DirectoryEntry.new(self, @parts[0])
           @entries.push(@cur_entry)
         else
           STDERR.puts "discarding (first): #{@parts[0]}" if @verbose
@@ -435,6 +598,7 @@ end
 bump = false
 format = 'xml'
 verb = false
+output = 'merge'
 opts = OptionParser.new do |opts|
   opts.banner = "Usage: #{$0} [options] <input> <output.txt>"
 
@@ -443,6 +607,9 @@ opts = OptionParser.new do |opts|
   end
   opts.on("-f", "--format FMT", "Format of input file (xml or txt)") do |f|
     format = f
+  end
+  opts.on("-o", "--output TYPE", "Type of output (merge, dump or tab)") do |o|
+    output = o
   end
   opts.on("-v", "--verbose", "Debugging on STDERR") do
     verb = true
@@ -459,27 +626,32 @@ if ARGV.size < 2
   exit
 end
 
+parser = nil
 File.open(ARGV[0], "r") do |f_in|
   if verb
     STDERR.puts(bump ? "printing with students bumped up one year" : "printing without bump")
+    STDERR.puts("output type: #{output}")
   end
-  parser = nil
+
   case format
   when /txt/
     parser = TabbedTextParser.new(f_in, verb, bump)
   else
     parser = WordXmlParser.new(f_in, verb, bump)
   end
+  
   parser.parse
+
   File.open(ARGV[1], "w") do |f_out|
-    parser.print_mail_merge(f_out)
+    case output
+    when /merge/
+      parser.print_mail_merge(f_out)
+    when /tab/
+      parser.tab(f_out)
+    else
+      parser.dump(f_out)
+    end
   end
 end
   
-STDERR.puts "#{HIGH_FAM[1]}: #{HIGH_FAM[0].last_name}"
-unless ERRORS.empty?
-  STDERR.puts "ERRORS"
-  ERRORS.each do |e|
-    STDERR.puts e.inspect
-  end
-end
+parser.print_stats
