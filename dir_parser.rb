@@ -178,8 +178,8 @@ class DirectoryEntry
   
   def initialize(p, ls)
     @parser = p
-    @last_name = ls
-    @lines = [ ls ]
+    @last_name = ls.upcase.strip
+    @lines = [ @last_name ]
     @families = []
     @students = []
     @lno = @parser.lno
@@ -264,6 +264,7 @@ class DirectoryEntry
       break if j == 2
     end
     while j < 2
+      j += 1
       ary.push(["kikdir_f#{j}_parents", ''])
       ary.push(["kikdir_f#{j}_street", ''])
       ary.push(["kikdir_f#{j}_city", ''])
@@ -275,7 +276,6 @@ class DirectoryEntry
       ary.push(["kikdir_f#{j}_work_phone2", ''])
       ary.push(["kikdir_f#{j}_cell_phone1", ''])
       ary.push(["kikdir_f#{j}_cell_phone2", ''])
-      j += 1
     end
     ary
   end
@@ -373,10 +373,12 @@ class DirectoryParser
       next if @bump && !ent.any_returning_students?
       ary = ent.to_a
       if header
+        f.write("kikdir_student_numbers\t")
         f.write(ary.map { |kv| kv[0]}.join("\t"))
         f.write("\n")
         header = false
       end
+      f.write("\t")
       f.write(ary.map { |kv| kv[1]}.join("\t"))
       f.write("\n")
      end
