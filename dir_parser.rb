@@ -27,7 +27,6 @@ ABBRS = {
 'Tib' => 'Tiburon' 
 }
 
-
 class Student
   attr_accessor :first_name, :grade_level
   
@@ -45,7 +44,7 @@ class Student
   end
   
   def to_s(incr = 0)
-    "#{@first_name} (#{grade_to_s(incr)})\n"
+    "#{@first_name} (#{grade_to_s(incr)})"
   end
 
   def fill_slots(slots, high_count, incr = 0)
@@ -115,7 +114,7 @@ class Family
         h["zip"] = addr[3]
       else
         h["street"] = @postal
-        @parser.log_error([@postal, @lno])
+        @parser.log_error("#{@lno}: cannot parse address '#{@postal}'")
       end
     end
     h
@@ -186,24 +185,46 @@ class DirectoryEntry
     @bump = @parser.bump
   end
   
-  def postal
-    @families.last.postal
+  def current_family
+    @families.last
   end
   
-  def postal=(p)
-    @families.last.postal = p.strip
+  def has_postal?
+    current_family.postal.empty?
+  end
+  
+  def append_postal(p)
+    current_family.postal << "\n" if !current_family.postal.empty?
+    current_family.postal << p.strip
   end
   
   def add_family(p)
-    @families.push(Family.new(@parser, p.strip))
+    if @families.size < 2
+      @families.push(Family.new(@parser, p.strip))
+    else
+      @parser.log_error("#{lno}: already have 2 families, ignoring #{p.strip}")
+      raise
+    end
   end
   
   def add_email(e)
-    @families.last.emails.push(e.strip)
+    if current_family.emails.size < 2
+      current_family.emails.push(e.strip)
+    else
+      @parser.log_error("#{lno}: already have 2 emails for #{current_family}")
+      @parser.log_error("ignoring #{e.strip}")
+      raise
+    end
   end
   
   def add_phone(p)
-    @families.last.phones.push(p.strip)
+    if current_family.phones.size < 3
+      current_family.phones.push(p.strip)
+    else
+      @parser.log_error("#{lno}: already have 3 phones for #{current_family}")
+      @parser.log_error("ignoring #{p.strip}")
+      # raise
+    end
   end
   
   def <=>(other)
@@ -219,7 +240,7 @@ class DirectoryEntry
     
     str = "LAST_NAME: #{last_name}\n"
     @students.each_with_index do |s, i|
-      str << "STUDENT [#{i}]: #{s.to_s(@bump ? 1 : 0)}" unless @bump && !s.returning?
+      str << "STUDENT [#{i}]: #{s.to_s(@bump ? 1 : 0)}\n" unless @bump && !s.returning?
     end
     @families.each_with_index do |f, i|
       str << "FAMILY [#{i}]:\n#{f}"
@@ -277,7 +298,46 @@ class DirectoryEntry
       ary.push(["kikdir_f#{j}_cell_phone1", ''])
       ary.push(["kikdir_f#{j}_cell_phone2", ''])
     end
+    ary.push(["kikdir_entry_html", to_html])
     ary
+  end
+
+  def to_html
+    slots = Array.new(8) { [ '', '', '' ] }
+    slots[0][0] = "<strong>#{last_name}</strong>"
+    j = 0
+    @students.each_with_index do |s, i|
+      unless @bump && !s.returning?
+        j += 1
+        slots[j][0] = s.to_s(@bump ? 1 : 0)
+        break if j == 4
+      end
+    end
+    j = 0
+    @families.each_with_index do |f, i|
+      slots[j][1] = f.parents.gsub(/[&]/, "&amp;")
+      slots[j+1][1] = f.postal.gsub(/[\r\n]+/, ', ')
+      f.emails.each_with_index do |e, k|
+        slots[j+k+2][1] = e
+        break if k == 1
+      end
+      f.phones.each_with_index do |p, k|
+        slots[j+k][2] = p
+        break if k == 2
+      end
+      k = 2 + f.emails.size
+      k = f.phones.size if f.phones.size > k 
+      j += k
+    end
+    rows = 1 + @students.size
+    rows = j if j > rows
+    s = ""
+    0.upto(rows-1) do |i|
+      s << "<tr><td valign='top' align='left'>#{slots[i][0]}</td>"
+      s << "<td valign='top' align='left'>#{slots[i][1]}</td>"
+      s << "<td valign='top' align='right'>#{slots[i][2]}</td></tr>"
+    end
+    s
   end
 
   def print_mail_merge
@@ -353,6 +413,7 @@ class DirectoryParser
   end
   
   def log_error(e)
+    STDERR.puts(e) if @verbose
     @errors.push(e)
   end
   
@@ -382,6 +443,15 @@ class DirectoryParser
       f.write(ary.map { |kv| kv[1]}.join("\t"))
       f.write("\n")
      end
+  end
+  
+  def html(f)
+    f.write("<html><head><title>Directory Entries</title></head><body><table>")
+    @entries.sort.each do |ent|
+      f.write(ent.to_html)
+      f.write("<tr><td colspan='3'>&nbsp;</td></tr>\n")
+    end
+    f.write("</table></body></html>\n")
   end
   
   def dump(f)
@@ -457,14 +527,17 @@ class TabbedTextParser < DirectoryParser
             if line.match(/@/)
               STDERR.puts "new email" if @verbose
               @cur_entry.add_email(line)
-            elsif !line.empty?
-              if @cur_entry.families.size == 0 || !@cur_entry.postal.empty?
-                STDERR.puts "new family" if @verbose
-                @cur_entry.add_family(line)
+            elsif line.match(/\b9[0-9]{4}\b/) || line.match(/^[1-9]/)
+              if @cur_entry.families.size > 0
+                STDERR.puts "append_postal" if @verbose
+                @cur_entry.append_postal(line)
               else
-                STDERR.puts "new postal" if @verbose
-                @cur_entry.postal = line
+                log_error("#{lno}: unexpected postal #{line} looking for family")
+                raise
               end
+            elsif !line.empty?
+              STDERR.puts "new family" if @verbose
+              @cur_entry.add_family(line)
             end
             col = 2
           when 2
@@ -534,14 +607,17 @@ class WordXmlParser < DirectoryParser
       if @parts[1].match(/@/)
         STDERR.puts "new email: #{@parts[1]}" if @verbose
         @cur_entry.add_email(@parts[1])
-      elsif !@parts[1].empty?
-        if @cur_entry.families.size == 0 || !@cur_entry.postal.empty?
-          STDERR.puts "new family: #{@parts[1]}" if @verbose
-          @cur_entry.add_family(@parts[1])
+      elsif @parts[1].match(/\b9[0-9]{4}\b/) || @parts[1].match(/^[1-9]/)
+        if @cur_entry.families.size > 0
+          STDERR.puts "append_postal: #{@parts[1]}" if @verbose
+          @cur_entry.append_postal(@parts[1])
         else
-          STDERR.puts "new postal: #{@parts[1]}" if @verbose
-          @cur_entry.postal = @parts[1]
+          log_error("#{lno}: unexpected postal #{@parts[1]}")
+          raise
         end
+      elsif !@parts[1].empty?
+        STDERR.puts "new family: #{@parts[1]}" if @verbose
+        @cur_entry.add_family(@parts[1])
       end
       if !@parts[2].empty?
         STDERR.puts "new phone: #{@parts[2]}" if @verbose
@@ -600,7 +676,7 @@ end
 bump = false
 format = 'xml'
 verb = false
-output = 'merge'
+output = 'html'
 opts = OptionParser.new do |opts|
   opts.banner = "Usage: #{$0} [options] <input> <output.txt>"
 
@@ -610,7 +686,7 @@ opts = OptionParser.new do |opts|
   opts.on("-f", "--format FMT", "Format of input file (xml or txt)") do |f|
     format = f
   end
-  opts.on("-o", "--output TYPE", "Type of output (merge, dump or tab)") do |o|
+  opts.on("-o", "--output TYPE", "Type of output (merge, dump, html or tab)") do |o|
     output = o
   end
   opts.on("-v", "--verbose", "Debugging on STDERR") do
@@ -642,18 +718,21 @@ File.open(ARGV[0], "r") do |f_in|
     parser = WordXmlParser.new(f_in, verb, bump)
   end
   
-  parser.parse
-
-  File.open(ARGV[1], "w") do |f_out|
-    case output
-    when /merge/
-      parser.print_mail_merge(f_out)
-    when /tab/
-      parser.tab(f_out)
-    else
-      parser.dump(f_out)
+  begin
+    parser.parse
+    File.open(ARGV[1], "w") do |f_out|
+      case output
+      when /merge/
+        parser.print_mail_merge(f_out)
+      when /tab/
+        parser.tab(f_out)
+      when /html/
+        parser.html(f_out)
+      else
+        parser.dump(f_out)
+      end
     end
+  ensure
+    parser.print_stats
   end
 end
-  
-parser.print_stats

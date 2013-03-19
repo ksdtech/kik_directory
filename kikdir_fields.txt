@@ -30,3 +30,4 @@ kikdir_f2_work_phone1
 kikdir_f2_work_phone2
 kikdir_f2_cell_phone1
 kikdir_f2_cell_phone2
+kikdir_entry_html

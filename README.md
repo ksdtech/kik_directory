@@ -26,4 +26,7 @@ them in the mail merge document.
 
 
 $ ./dir_parser.rb -b -f xml -o tab dir_2013.xml kik_data.txt
+
+Add kik_student_numbers for any unmatched rows
+
 $ ./merge_for_import.rb
