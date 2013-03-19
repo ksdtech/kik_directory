@@ -66,10 +66,10 @@ kik_email_keys = %w{
 }
 
 merge_keys = [
-  :student_number,
-  :first_name,
-  :last_name,
-  :grade_level
+  [:student_number, 'student_number'],
+  [:first_name, 'xfirst_name'],
+  [:last_name, 'xlast_name'],
+  [:grade_level, 'xgrade_level']
 ]
 
 ln = nil
@@ -88,7 +88,7 @@ File.open("merged.txt", "w") do |f|
       sn = headers.index('kikdir_student_numbers')
       phones = kik_phone_keys.map { |h| headers.index(h) }
       emails = kik_email_keys.map { |h| headers.index(h) }
-      f.write((merge_keys.map { |h| h.to_s } + headers).join("\t"))
+      f.write((merge_keys.map { |h| h[1] } + headers).join("\t"))
       f.write("\n")
       next
     end
@@ -120,10 +120,13 @@ File.open("merged.txt", "w") do |f|
         end
       end
       all_students = all_students + students if students
+      if !all_students.empty?
+        row[sn] = all_students.uniq.sort.join(',')
+      end
     end
     if !all_students.empty?
       all_students.uniq.each do |sn|
-        f.write((merge_keys.map { |h| data[sn][h] || '' } + row.to_a).join("\t"))
+        f.write((merge_keys.map { |h| data[sn][h[0]] || '' } + row.to_a).join("\t"))
         f.write("\n")
         marked[sn] = nil
       end
